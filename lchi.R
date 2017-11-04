@@ -1,9 +1,8 @@
-library(rvest)
-library(XML)
-library(httr)
-library(data.table)
-library(dtplyr)
-library(dplyr)
+library(rvest, quietly = T)
+library(httr, quietly = T)
+library(data.table, quietly = T)
+library(dtplyr, quietly = T)
+library(dplyr, quietly = T)
 
 find_last_page <- function() {
   go_next <- TRUE
@@ -33,7 +32,7 @@ read_lchi_page <- function(x) {
                               `data-contype-id-2` = '',
                               `data-contype-id-3` = '',
                               pge = x), encode="form")
-  doc <- content(resp)  
+  content(resp)
 }
 
 parse_lchi_userlist <- function(page) {
@@ -42,7 +41,7 @@ parse_lchi_userlist <- function(page) {
 }
 
 read_all_ids <- function() {
-  do.call("c", lapply(seq(1:find_last_page()), parse_lchi_userlist))
+  as.list(do.call("c", lapply(seq(1:find_last_page()), parse_lchi_userlist)))
 }
 
 generate_js <- function(x) {
@@ -51,6 +50,8 @@ generate_js <- function(x) {
                
                var fs = require('fs');
                var path = 'userpage.html'
+              
+               page.settings.loadImages = false
                
                page.open('http://investor.moex.com", x,"', function (status) {
                var content = page.content;
@@ -62,24 +63,56 @@ generate_js <- function(x) {
   close(f)
 }
 
-read_user_data_table <- function(url) {
-  print(url)
+read_user_data <- function(url) {
   generate_js(url)
   system("./phantomjs scrape_lchi.js", show.output.on.console = F)
-  df <- readHTMLTable(htmlParse("userpage.html"), stringsAsFactors = F)
-  deals <- df[[length(df)]]
-  if(!is.null(deals)) {
-    if((ncol(deals) == 6) & (nrow(deals) > 0)) {
-      colnames(deals) <- c("MARKET", "SEC", "POSITION", "PRICE", "BALANCE", "COST")
-      v <- vars(POSITION, PRICE, BALANCE, COST)
-      as_tibble(deals) %>% mutate_at("POSITION", 
-                                     function(x) gsub("(\\d+).+", "\\1", x)) %>% 
-        mutate_at(v, function(x) gsub("-", "0", x)) %>% 
-        mutate_at(v, as.numeric) %>% select(SEC, POSITION)
-    }    
-  }
+
+  html_file <- read_html("userpage.html")
+  
+  spinner <- html_nodes(html_file, xpath='//span[@spinner-key="spinner-6"]') %>% 
+    xml_children()
+  
+  if(length(spinner) == 0) {
+    deals <- html_nodes(html_file, xpath='//div[@class="for_table"]/table') %>% 
+      html_table()
+    
+    deals <- deals[[length(deals)]]
+    
+    colnames(deals) <- c("MARKET", "SEC", "POSITION", "PRICE", "BALANCE", 
+                         "COST")
+    as_tibble(deals) %>% select(SEC, POSITION) %>%
+      mutate_at("POSITION", function(x) gsub("^(-?[0-9]\\d*).+$", "\\1", x)) %>% 
+        mutate_at("POSITION", as.numeric)
+  } else NULL
 }
 
 read_all_users <- function() {
-  do.call("bind_rows", lapply(read_all_ids(), read_user_data_table))
+  raw <- read_n_users()
+  mutate(raw, LONG = ifelse(POSITION > 0, POSITION, 0), 
+         SHORT = ifelse(POSITION < 0, POSITION, 0)) %>% group_by(SEC) %>% 
+    summarize(LONG = sum(LONG), SHORT = sum(SHORT))
+}
+
+read_n_users <- function(ids = NULL, n = NULL) {
+  datalist = list()
+  
+  if (is.null(ids)) ids <- read_all_ids()
+  if (is.null(n)) n <- length(ids)
+
+  ids <- ids[1:n]
+  
+  idx <- 0
+  while(idx < n) {
+    dat <- read_user_data(ids[1])
+    if (is.null(dat)) {
+      ids[length(ids) + 1] <- ids[1]
+    } else {
+      idx <- idx + 1
+      print(paste0(idx, "/", n, ": ", ids[1]))
+      datalist[[idx]] <- dat
+    }
+    ids[1] <- NULL
+  }
+  
+  do.call(bind_rows, datalist)
 }
