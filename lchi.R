@@ -4,30 +4,34 @@ library(data.table, quietly = T)
 library(dtplyr, quietly = T)
 library(dplyr, quietly = T)
 
-find_last_page <- function() {
+find_last_page <- function(gr) {
   go_next <- TRUE
   next_page <- 1
   
   while(go_next) {
-    doc <- read_lchi_page(next_page)
+    doc <- read_lchi_page(next_page, gr)
     pnav <- html_nodes(doc, css = '.pnav')
     
-    next_page <- gsub("^.+fChPage\\(([0-9]+)\\).+$", "\\1", 
-                      pnav[grepl(pattern = "fChPage", pnav)], perl = T) %>% 
-      as.integer() %>% unique() %>% max()
+    if (length(pnav) > 0) {
+      next_page <- gsub("^.+fChPage\\(([0-9]+)\\).+$", "\\1", 
+                        pnav[grepl(pattern = "fChPage", pnav)], perl = T) %>% 
+        as.integer() %>% unique() %>% max()
+      
+      go_next <- any(grepl("След", html_text(pnav)))
+    } else break
     
-    go_next <- any(grepl("След", html_text(pnav)))
   }
   
   next_page
 }
 
-read_lchi_page <- function(x) {
+read_lchi_page <- function(x, y) {
   url <- "http://investor.moex.com/ru/statistics/2017/default.aspx"
   
   resp <- POST(url, body=list(act = '',
                               sby = 8,
                               nick = '',
+                              gr = as.character(y),
                               `data-contype-id-1` = '',
                               `data-contype-id-2` = '',
                               `data-contype-id-3` = '',
@@ -35,13 +39,38 @@ read_lchi_page <- function(x) {
   content(resp)
 }
 
-parse_lchi_userlist <- function(page) {
-  html_nodes(read_lchi_page(page), css = '.nickname') %>% 
-    html_nodes("a") %>% html_attr("href")
+parse_lchi_userlist <- function(page, gr) {
+  p0 <- read_lchi_page(page, gr) 
+  
+  p1 <- html_nodes(p0, xpath='//table[@class = "table table-bordered table-striped table-stat"]') %>%
+    html_table()
+  
+  p1 <- p1[[1]]
+  
+  p2 <- html_nodes(p0, css = '.nickname') %>% html_nodes("a")
+  
+  d <- html_nodes(p0, xpath='//select[@id="date"]/option[1]') %>% html_text()
+
+  start_capital <- gsub("[[:space:]]", "", 
+                       gsub(",", ".", p1[,grepl("Стартовые активы", 
+                                                names(p1))]))
+  
+  data.frame(user = p1$`Участник`, url = html_attr(p2, "href"),
+             initial = as.numeric(start_capital), 
+             date = as.POSIXct(strptime(d, "%Y-%m-%d")),
+             stringsAsFactors = F)
 }
 
-read_all_ids <- function() {
-  as.list(do.call("c", lapply(seq(1:find_last_page()), parse_lchi_userlist)))
+read_all_ids <- function(gr) {
+  ul <- do.call("rbind", lapply(seq(1:find_last_page(gr)), function(x)
+    parse_lchi_userlist(x, gr)))
+  
+  unique(ul, by = "user")
+}
+
+merge_users <- function() {
+  gr <- c(0, 1, 2, 3, 22, 5, 6, 8, 20, 23, 14)
+  unique(do.call(rbind, lapply(gr, read_all_ids)), by = "user")
 }
 
 generate_js <- function(x) {
@@ -63,26 +92,30 @@ generate_js <- function(x) {
   close(f)
 }
 
-read_user_data <- function(url) {
-  generate_js(url)
+read_user_data <- function(u) {
+  generate_js(u$url)
   system("./phantomjs scrape_lchi.js", show.output.on.console = F)
 
   html_file <- read_html("userpage.html")
   
   spinner <- html_nodes(html_file, xpath='//span[@spinner-key="spinner-6"]') %>% 
     xml_children()
-  
+
   if(length(spinner) == 0) {
-    deals <- html_nodes(html_file, xpath='//div[@class="for_table"]/table') %>% 
+    tabs <- html_nodes(html_file, xpath='//div[@class="for_table"]/table') %>% 
       html_table()
-    
-    deals <- deals[[length(deals)]]
+
+    deals <- tabs[[length(tabs)]]
     
     colnames(deals) <- c("MARKET", "SEC", "POSITION", "PRICE", "BALANCE", 
                          "COST")
-    as_tibble(deals) %>% select(SEC, POSITION) %>%
+    
+    df <- as_tibble(deals) %>% select(SEC, POSITION) %>%
       mutate_at("POSITION", function(x) gsub("^(-?[0-9]\\d*).+$", "\\1", x)) %>% 
         mutate_at("POSITION", as.numeric)
+    
+    if(nrow(df) > 0) mutate(df, USER = u$user) else df
+    
   } else NULL
 }
 
@@ -96,22 +129,26 @@ read_all_users <- function() {
 read_n_users <- function(ids = NULL, n = NULL) {
   datalist = list()
   
-  if (is.null(ids)) ids <- read_all_ids()
-  if (is.null(n)) n <- length(ids)
+  if (is.null(ids)) ids <- read_all_ids(12)
+  if (is.null(n)) n <- nrow(ids)
 
-  ids <- ids[1:n]
+  ids <- ids[1:n,]
   
   idx <- 0
   while(idx < n) {
-    dat <- read_user_data(ids[1])
-    if (is.null(dat)) {
-      ids[length(ids) + 1] <- ids[1]
-    } else {
+    r <- ids[1, ]
+    dat <- read_user_data(r)
+    if (is.null(dat)) ids <- rbind(ids, r)
+    else {
       idx <- idx + 1
-      print(paste0(idx, "/", n, ": ", ids[1]))
+      print(paste0(idx, "/", n, ": ", r$user, ": ",  r$url))
+      if(nrow(dat)>0) {
+        dat$INITIAL <- r$initial
+        dat$DATE <- r$date
+      }
       datalist[[idx]] <- dat
     }
-    ids[1] <- NULL
+    ids <- ids[-1,]
   }
   
   do.call(bind_rows, datalist)
