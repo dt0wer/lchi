@@ -39,11 +39,14 @@ read_lchi_page <- function(x, y) {
   content(resp)
 }
 
+format_number <- function(x) gsub("[[:space:]]", "", gsub(",", ".", x))
+
 parse_lchi_userlist <- function(page, gr) {
   p0 <- read_lchi_page(page, gr) 
   
-  p1 <- html_nodes(p0, xpath='//table[@class = "table table-bordered table-striped table-stat"]') %>%
-    html_table()
+  xp <- '//table[@class = "table table-bordered table-striped table-stat"]'
+  
+  p1 <- html_nodes(p0, xpath = xp) %>% html_table()
   
   p1 <- p1[[1]]
   
@@ -51,18 +54,19 @@ parse_lchi_userlist <- function(page, gr) {
   
   d <- html_nodes(p0, xpath='//select[@id="date"]/option[1]') %>% html_text()
 
-  start_capital <- gsub("[[:space:]]", "", 
-                       gsub(",", ".", p1[,grepl("Стартовые активы", 
-                                                names(p1))]))
+  start_capital <- format_number(p1[,grepl("Стартовые активы", 
+                                                      names(p1))])
+  income <- format_number(p1[,grepl("Общий доход", names(p1))])
   
-  data.frame(user = p1$`Участник`, url = html_attr(p2, "href"),
+  tibble(user = p1$`Участник`, url = html_attr(p2, "href"),
              initial = as.numeric(start_capital), 
-             date = as.POSIXct(strptime(d, "%Y-%m-%d")),
-             stringsAsFactors = F)
+             date = as.POSIXct(strptime(d, "%Y-%m-%d")), 
+         deals = as.numeric(gsub("-", "0", p1$`Сделок`)), income) %>% 
+    filter(deals > 0, income != "-")
 }
 
 read_all_ids <- function(gr) {
-  ul <- do.call("rbind", lapply(seq(1:find_last_page(gr)), function(x)
+  ul <- do.call("bind_rows", lapply(seq(1:find_last_page(gr)), function(x)
     parse_lchi_userlist(x, gr)))
   
   unique(ul, by = "user")
@@ -101,22 +105,32 @@ read_user_data <- function(u) {
   spinner <- html_nodes(html_file, xpath='//span[@spinner-key="spinner-6"]') %>% 
     xml_children()
 
+  df <- NULL
+  
   if(length(spinner) == 0) {
+    df <- tibble()
+
     tabs <- html_nodes(html_file, xpath='//div[@class="for_table"]/table') %>% 
       html_table()
-
-    deals <- tabs[[length(tabs)]]
     
-    colnames(deals) <- c("MARKET", "SEC", "POSITION", "PRICE", "BALANCE", 
-                         "COST")
-    
-    df <- as_tibble(deals) %>% select(SEC, POSITION) %>%
-      mutate_at("POSITION", function(x) gsub("^(-?[0-9]\\d*).+$", "\\1", x)) %>% 
-        mutate_at("POSITION", as.numeric)
-    
-    if(nrow(df) > 0) mutate(df, USER = u$user) else df
-    
-  } else NULL
+    if (!is.null(tabs)) {
+      if (length(tabs) > 0) {
+        deals <- tabs[[length(tabs)]]
+        
+        colnames(deals) <- c("MARKET", "SEC", "POSITION", "PRICE", "BALANCE", 
+                             "COST")
+        
+        df <- as_tibble(deals) %>% select(SEC, POSITION) %>%
+          mutate_at("POSITION", function(x) gsub("^(-?[0-9]\\d*).+$", "\\1", 
+                                                 x)) %>% 
+          mutate_at("POSITION", as.numeric)
+        
+        if(nrow(df) > 0) mutate(df, USER = u$user)
+      }
+    }
+  }
+  
+  df
 }
 
 read_all_users <- function() {
