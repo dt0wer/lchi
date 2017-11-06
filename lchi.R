@@ -3,6 +3,7 @@ library(httr, quietly = T)
 library(data.table, quietly = T)
 library(dtplyr, quietly = T)
 library(dplyr, quietly = T)
+library(RMySQL, quietly = T)
 
 find_last_page <- function(gr) {
   go_next <- TRUE
@@ -134,12 +135,42 @@ read_user_data <- function(u) {
   df
 }
 
-read_all_users <- function(raw) {
-  mutate(raw, LONG = ifelse(POSITION > 0, POSITION, 0), 
+replace_mysql <- function(con, tblname, dump, ch) {
+  for (i in 1:ceiling(nrow(dump)/ch)) {
+    query = paste0('REPLACE INTO ', tblname, '(',
+                   paste0('`', colnames(dump), '`', collapse = ','),') VALUES ')
+    vals = NULL
+    for (j in 1:ch) {
+      k = (i-1)*ch+j
+      if (k <= nrow(dump)) {
+        vals[j] = paste0('(', paste0('"', dump[k,], '"', collapse = ','), ')')
+      }
+    }
+    query = paste0(query, paste0(vals,collapse=','))
+    
+    print(query)
+    dbExecute(con, query)
+  }
+}
+
+upload_to_mysql <- function(raw) {
+  con <- dbConnect(RMySQL::MySQL(),
+                   host = "general.c7rqzkms4qhi.us-east-2.rds.amazonaws.com",
+                   dbname = "trade",
+                   password = "LuNago",
+                   user = "quik_2")
+  
+  df <- mutate(raw, LONG = ifelse(POSITION > 0, POSITION, 0), 
          SHORT = ifelse(POSITION < 0, POSITION, 0)) %>% group_by(SEC, DATE) %>% 
     summarize(LONG = sum(LONG), SHORT = sum(SHORT)) %>%
     filter(SHORT < 0) %>% mutate(LS_RATIO = round(LONG/(abs(LONG)+abs(SHORT)),
                                                   2))
+    
+  
+  replace_mysql(con, "lchi", mutate_at(df, "DATE", function(x) 
+    strftime(x, "%Y-%m-%d")), ch = 10)
+  
+  dbDisconnect(con)
 }
 
 read_n_users <- function(ids = NULL, n = NULL) {
@@ -169,3 +200,6 @@ read_n_users <- function(ids = NULL, n = NULL) {
   
   do.call(bind_rows, datalist)
 }
+
+df <- read_n_users()
+upload_to_mysql(df)
