@@ -102,7 +102,8 @@ read_user_data <- function(u) {
 
   html_file <- read_html("userpage.html")
   
-  spinner <- html_nodes(html_file, xpath='//span[@spinner-key="spinner-6"]') %>% 
+  spinner <- html_nodes(html_file, 
+                        xpath='//span[@spinner-key="spinner-6"]') %>% 
     xml_children()
 
   df <- NULL
@@ -133,11 +134,12 @@ read_user_data <- function(u) {
   df
 }
 
-read_all_users <- function() {
-  raw <- read_n_users()
+read_all_users <- function(raw) {
   mutate(raw, LONG = ifelse(POSITION > 0, POSITION, 0), 
-         SHORT = ifelse(POSITION < 0, POSITION, 0)) %>% group_by(SEC) %>% 
-    summarize(LONG = sum(LONG), SHORT = sum(SHORT))
+         SHORT = ifelse(POSITION < 0, POSITION, 0)) %>% group_by(SEC, DATE) %>% 
+    summarize(LONG = sum(LONG), SHORT = sum(SHORT)) %>%
+    filter(SHORT < 0) %>% mutate(LS_RATIO = round(LONG/(abs(LONG)+abs(SHORT)),
+                                                  2))
 }
 
 read_n_users <- function(ids = NULL, n = NULL) {
