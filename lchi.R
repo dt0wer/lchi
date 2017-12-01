@@ -73,11 +73,6 @@ read_all_ids <- function(gr) {
   unique(ul, by = "user")
 }
 
-merge_users <- function() {
-  gr <- c(0, 1, 2, 3, 22, 5, 6, 8, 20, 23, 14)
-  unique(do.call(rbind, lapply(gr, read_all_ids)), by = "user")
-}
-
 generate_js <- function(x) {
   js <- paste0("var webPage = require('webpage');
                var page = webPage.create();
@@ -156,9 +151,9 @@ replace_mysql <- function(con, tblname, dump, ch) {
 upload_to_mysql <- function(raw) {
   con <- dbConnect(RMySQL::MySQL(),
                    host = "general.c7rqzkms4qhi.us-east-2.rds.amazonaws.com",
-                   dbname = "trade",
-                   password = "LuNago",
-                   user = "quik_2")
+                   dbname = "",
+                   password = "",
+                   user = "")
   
   df <- mutate(raw, LONG = ifelse(POSITION > 0, POSITION, 0), 
          SHORT = ifelse(POSITION < 0, POSITION, 0)) %>% group_by(SEC, DATE) %>% 
@@ -201,5 +196,7 @@ read_n_users <- function(ids = NULL, n = NULL) {
   do.call(bind_rows, datalist)
 }
 
-df <- read_n_users()
-upload_to_mysql(df)
+do_job <- function() {
+  df <- read_n_users()
+  upload_to_mysql(df)  
+}
